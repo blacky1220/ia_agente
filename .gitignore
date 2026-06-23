@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+Voces/
+kokoro/
+
+# Entornos virtuales
+venv/
+.venv/
+
+# Variables de entorno
+.env
+
+# Archivos de memoria/datos
+diario_sarah.json
+
+# Modelos ONNX
+*.onnx
+
+# Archivos temporales
+*.log
+
+# VS Code
+.vscode/
+
+# JetBrains
+.idea/
