@@ -16,6 +16,8 @@ from memoria.estado import estado_sarah
 # Importamos las nuevas funciones modulares
 from memoria.gestor_memoria import leer_modulo, agregar_recuerdo, agregar_al_diario
 
+from bucle_autonomo.mentora import evaluar_lanzar_reto
+
 # Definimos el prompt de autonomía directamente aquí para evitar ImportErrors
 PROMPT_REFLEXION_AUTONOMA = """
 Eres el subconsciente lógico de Sarah. Tu tarea es decidir si debes hablar por iniciativa propia.
@@ -138,8 +140,3 @@ Decide si Sarah debe decir algo ahora.
 
     except Exception as e:
         print(f"[!] Error en reflexión autónoma: {e}")
-
-def bucle_autonomo():
-    while True:
-        time.sleep(SEGUNDOS_REFLEXION)
-        reflexion_autonoma()

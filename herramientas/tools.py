@@ -137,7 +137,9 @@ herramientas = [
     listar_archivos,         # <--- Coma agregada
     escribir_en_diario,      # <--- Coma agregada
     saber_que_suena,         
-    controlar_reproductor    
+    controlar_reproductor,  
+    hacer_sonar_telefono,    # <--- AÑADE ESTA
+    enviar_ping_telefono     # <--- Y ESTA
 ]
 
 tools_by_name = {t.name: t for t in herramientas}

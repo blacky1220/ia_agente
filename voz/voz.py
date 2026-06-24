@@ -1,59 +1,55 @@
 import os
 import re
-import time
+import uuid
 import threading
-from typing import List
+import subprocess
+from pathlib import Path
 
-import numpy as np
-import sounddevice as sd
-from kokoro_onnx import Kokoro
+from dotenv import load_dotenv
+from elevenlabs.client import ElevenLabs
 
-from config import (
-    NOMBRE_IA,
-    KOKORO_MODEL_PATH,
-    KOKORO_VOICES_PATH
-)
+from config import NOMBRE_IA
 
 
 # ==========================================
-# CONFIGURACIÓN DE VOZ
+# RUTAS Y .ENV
 # ==========================================
 
-SAMPLE_RATE = 24000
+BASE_DIR = Path(__file__).resolve().parent.parent
+ENV_PATH = BASE_DIR / ".env"
 
-VOZ_DEFAULT = "ef_dora"
-VELOCIDAD_DEFAULT = 1.0
+load_dotenv(ENV_PATH, override=True)
+
+ELEVENLABS_API_KEY = (
+    os.getenv("ELEVENLABS_API_KEY")
+    or os.getenv("ELEVEN_API_KEY")
+    or ""
+).strip().strip('"').strip("'")
+
+# Puedes cambiar esta voz desde tu .env
+ELEVENLABS_VOICE_ID = (
+    os.getenv("ELEVENLABS_VOICE_ID")
+    or "EXAVITQu4vr4xnSDxMaL"
+).strip()
+
+MODEL_ID = "eleven_multilingual_v2"
+
+AUDIO_DIR = BASE_DIR / "temp_audio"
+AUDIO_DIR.mkdir(exist_ok=True)
 
 hablando_lock = threading.Lock()
 
+client = None
 
-# ==========================================
-# CARGA GLOBAL DE KOKORO ONNX
-# ==========================================
-
-try:
-    motor_kokoro = Kokoro(
-        KOKORO_MODEL_PATH,
-        KOKORO_VOICES_PATH
-    )
-except Exception as e:
-    print("[!] Error al cargar Kokoro ONNX.")
-    print("Verifica que existan estos archivos:")
-    print(f" - {KOKORO_MODEL_PATH}")
-    print(f" - {KOKORO_VOICES_PATH}")
-    print(f"Detalle: {e}")
-    raise SystemExit
+if ELEVENLABS_API_KEY:
+    client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
 
 
 # ==========================================
-# LIMPIEZA Y HUMANIZACIÓN
+# LIMPIEZA
 # ==========================================
 
 def limpiar_texto(texto: str) -> str:
-    """
-    Limpia etiquetas, markdown y contenido que Sarah no debe decir en voz alta.
-    """
-
     if not texto:
         return ""
 
@@ -76,17 +72,12 @@ def limpiar_texto(texto: str) -> str:
     texto = texto.replace("#", "")
     texto = texto.replace("`", "")
 
-    texto = re.sub(r"^\s*[-•]\s*", "", texto, flags=re.MULTILINE)
     texto = re.sub(r"\s+", " ", texto)
 
     return texto.strip()
 
 
-def humanizar_fonetica(texto: str) -> str:
-    """
-    Ajusta muletillas para que suenen más naturales.
-    """
-
+def humanizar_texto(texto: str) -> str:
     reemplazos = {
         r"\bhmm\b": "mmm...",
         r"\bmmm\b": "mmm...",
@@ -98,170 +89,106 @@ def humanizar_fonetica(texto: str) -> str:
     }
 
     for patron, nuevo in reemplazos.items():
-        texto = re.sub(
-            patron,
-            nuevo,
-            texto,
-            flags=re.IGNORECASE
-        )
+        texto = re.sub(patron, nuevo, texto, flags=re.IGNORECASE)
 
     return texto
 
 
-def separar_frases(texto: str) -> List[str]:
-    """
-    Divide el texto en frases pequeñas para insertar pausas humanas.
-    """
+# ==========================================
+# REPRODUCCIÓN
+# ==========================================
 
-    frases = re.split(r"(?<=[.!?,;:…])\s+", texto)
-    frases_limpias = []
+def guardar_audio_stream(audio_stream, ruta_audio: Path):
+    with open(ruta_audio, "wb") as f:
+        if isinstance(audio_stream, bytes):
+            f.write(audio_stream)
+            return
 
-    for frase in frases:
-        frase = frase.strip()
-
-        if not frase:
-            continue
-
-        if len(frase) > 220:
-            subfrases = re.split(r"(?<=,)\s+", frase)
-            frases_limpias.extend([s.strip() for s in subfrases if s.strip()])
-        else:
-            frases_limpias.append(frase)
-
-    return frases_limpias
+        for chunk in audio_stream:
+            if isinstance(chunk, bytes):
+                f.write(chunk)
+            else:
+                f.write(bytes(chunk))
 
 
-def pausa_humana(frase: str):
-    """
-    Pausas según intención de la frase.
-    """
-
-    frase = frase.strip()
-
-    if frase.endswith("...") or frase.endswith("…"):
-        time.sleep(0.65)
-
-    elif frase.endswith("?"):
-        time.sleep(0.45)
-
-    elif frase.endswith("!"):
-        time.sleep(0.32)
-
-    elif frase.endswith("."):
-        time.sleep(0.28)
-
-    elif frase.endswith(","):
-        time.sleep(0.12)
-
-    elif frase.endswith(";") or frase.endswith(":"):
-        time.sleep(0.18)
-
-    else:
-        time.sleep(0.15)
-
-
-def velocidad_por_modo(modo: str) -> float:
-    """
-    Ajusta velocidad según el modo de Sarah.
-    """
-
-    modo = (modo or "normal").lower().strip()
-
-    if modo == "soporte":
-        return 0.96
-
-    if modo == "maestra":
-        return 0.94
-
-    if modo == "compañera":
-        return 1.0
-
-    if modo == "introspectiva":
-        return 0.92
-
-    if modo == "alerta":
-        return 0.95
-
-    return VELOCIDAD_DEFAULT
-
-
-def voz_por_modo(modo: str) -> str:
-    """
-    Por ahora conserva una voz estable para mantener identidad.
-    """
-
-    return VOZ_DEFAULT
+def reproducir_audio(ruta_audio: Path):
+    subprocess.run(
+        ["mpv", "--no-terminal", "--really-quiet", str(ruta_audio)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
 
 
 # ==========================================
-# FUNCIÓN PRINCIPAL
+# FALLBACK LOCAL
 # ==========================================
 
-def hablar(
-    texto: str,
-    voz: str | None = None,
-    velocidad: float | None = None,
-    modo: str = "normal"
-):
+def hablar_fallback(texto: str):
     """
-    Genera y reproduce voz con Kokoro ONNX y pausas humanas.
+    Fallback simple usando espeak-ng.
+    No suena tan realista, pero evita que Sarah se caiga.
+    Instala con:
+    sudo pacman -S espeak-ng
     """
+    print("[Sarah] Usando voz fallback local.")
 
+    subprocess.run(
+        ["espeak-ng", "-v", "es-mx", texto],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
+
+
+# ==========================================
+# VOZ PRINCIPAL
+# ==========================================
+
+def hablar(texto: str, velocidad: float = 1.0, modo: str = "normal"):
     texto = limpiar_texto(texto)
-    texto = humanizar_fonetica(texto)
+    texto = humanizar_texto(texto)
 
     if not texto:
         return
 
-    if voz is None:
-        voz = voz_por_modo(modo)
-
-    if velocidad is None:
-        velocidad = velocidad_por_modo(modo)
-
     with hablando_lock:
         print(f"\n[{NOMBRE_IA}] {texto}")
 
-        frases = separar_frases(texto)
+        if client is None:
+            print("[!] No hay ELEVENLABS_API_KEY. Usando fallback.")
+            hablar_fallback(texto)
+            return
 
-        for frase in frases:
-            try:
-                muestras, sample_rate = motor_kokoro.create(
-                    frase,
-                    voice=voz,
-                    speed=velocidad,
-                    lang="es"
-                )
+        ruta_audio = AUDIO_DIR / f"sarah_{uuid.uuid4().hex}.mp3"
 
-                audio = np.asarray(muestras, dtype=np.float32)
+        try:
+            audio_stream = client.text_to_speech.convert(
+                text=texto,
+                voice_id=ELEVENLABS_VOICE_ID,
+                model_id=MODEL_ID,
+                output_format="mp3_44100_128"
+            )
 
-                sd.play(audio, sample_rate)
-                sd.wait()
+            guardar_audio_stream(audio_stream, ruta_audio)
+            reproducir_audio(ruta_audio)
 
-                pausa_humana(frase)
+        except Exception as e:
+            error = str(e)
 
-            except Exception as e:
-                print("[!] Error al generar voz en frase:")
-                print(frase)
-                print(f"Detalle: {e}")
+            if "paid_plan_required" in error or "Free users cannot use library voices" in error:
+                print("[!] Esa voz de ElevenLabs requiere plan pagado.")
+                print("[!] Cambia ELEVENLABS_VOICE_ID por una voz permitida o usa Kokoro.")
+            else:
+                print(f"[!] Error con ElevenLabs: {e}")
 
+            hablar_fallback(texto)
 
-# ==========================================
-# PRUEBA DIRECTA
-# ==========================================
+        finally:
+            if ruta_audio.exists():
+                try:
+                    ruta_audio.unlink()
+                except Exception:
+                    pass
+
 
 if __name__ == "__main__":
-    hablar(
-        "Mmm... estoy lista, Rafael. Podemos revisar el código, separar módulos, o pensar en cómo debería evolucionar Sarah.",
-        modo="compañera"
-    )
-
-    hablar(
-        "Alto. Aquí hay un problema: estás mezclando demasiadas responsabilidades en un solo archivo.",
-        modo="soporte"
-    )
-
-    hablar(
-        "Pregunta rápida: si Sarah tuviera que aprender contigo hoy, ¿qué debería practicar primero?",
-        modo="maestra"
-    )
+    hablar("Sistemas listos. Estoy contigo, Rafael. ¿En qué vamos a trabajar hoy?")
